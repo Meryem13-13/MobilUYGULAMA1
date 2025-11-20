@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { View, Text, ScrollView, Button } from "react-native";
 import { seanslariGetir, seanslariTemizle } from "../yardimci/depolama";
 
-export default function RaporlarEkrani() {
+export default function Raporlar() {
   const [seanslar, setSeanslar] = useState([]);
 
   useEffect(() => {
@@ -13,20 +13,13 @@ export default function RaporlarEkrani() {
     yukle();
   }, []);
 
-  const toplamSure = seanslar.reduce((acc, s) => acc + (s.sure || 0), 0);
-  const toplamDikkat = seanslar.reduce(
-    (acc, s) => acc + (s.dikkatDagilma || 0),
-    0
-  );
+  const toplamSure = seanslar.reduce((s, x) => s + (x.sure || 0), 0);
+  const toplamDikkat = seanslar.reduce((s, x) => s + (x.dikkat || 0), 0);
 
   return (
     <ScrollView style={{ padding: 16 }}>
-      <Text style={{ fontSize: 18 }}>
-        Toplam Odaklanma Süresi: {Math.round(toplamSure / 60)} dakika
-      </Text>
-      <Text style={{ marginBottom: 10 }}>
-        Toplam Dikkat Dağınıklığı: {toplamDikkat}
-      </Text>
+      <Text style={{ fontSize: 18 }}>Toplam Odaklanma Süresi: {Math.round(toplamSure / 60)} dk</Text>
+      <Text style={{ marginBottom: 12 }}>Toplam Dikkat Dağınıklığı: {toplamDikkat}</Text>
 
       <Button
         title="Tüm Seansları Sil"
@@ -36,14 +29,10 @@ export default function RaporlarEkrani() {
         }}
       />
 
-      <Text style={{ marginTop: 20, fontSize: 16 }}>Seans Kayıtları:</Text>
-
       {seanslar.map((s) => (
-        <View key={s.id} style={{ padding: 8, borderBottomWidth: 1 }}>
-          <Text>
-            {new Date(s.baslangic).toLocaleString()} — {Math.round(s.sure / 60)}{" "}
-            dk — {s.kategori} — Dikkat: {s.dikkatDagilma}
-          </Text>
+        <View key={s.id} style={{ paddingVertical: 8, borderBottomWidth: 1 }}>
+          <Text>{s.kategori} — {Math.round(s.sure / 60)} dk — Dikkat: {s.dikkat}</Text>
+          <Text style={{ color: "gray" }}>{new Date(s.baslangic).toLocaleString()}</Text>
         </View>
       ))}
     </ScrollView>
