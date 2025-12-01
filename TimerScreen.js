@@ -9,40 +9,51 @@ import {
   Alert,
   SafeAreaView,
 } from "react-native";
-import StarSky from "../components/StarSky";
+
 import { addSession, getAllSessions } from "../storage/sessionStorage";
-
-const FOCUS_DURATION_SEC = 25 * 60; // 25 dk
-const BREAK_DURATION_SEC = 5 * 60;  // 5 dk
-
-const CATEGORIES = ["Ders", "Kodlama", "Proje", "Kitap"];
+import { loadSettings } from "../storage/settingsStorage";
+import { loadCategories } from "../storage/categoryStorage";
 
 export default function TimerScreen() {
   const [mode, setMode] = useState("focus"); // "focus" | "break"
-  const [timeLeft, setTimeLeft] = useState(FOCUS_DURATION_SEC);
+  const [timeLeft, setTimeLeft] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
-  const [selectedCategory, setSelectedCategory] = useState(CATEGORIES[0]);
+
+  const [focusDuration, setFocusDuration] = useState(1500); // saniye
+  const [breakDuration, setBreakDuration] = useState(300); // saniye
+
+  const [categories, setCategories] = useState([]);
+  const [selectedCategory, setSelectedCategory] = useState("");
   const [distractionCount, setDistractionCount] = useState(0);
-  const [starCount, setStarCount] = useState(0);
 
   const intervalRef = useRef(null);
   const appState = useRef(AppState.currentState);
 
-  // Uygulama açıldığında daha önceki focus seanslarına göre yıldız sayısını yükle
+  // ⭐ Uygulama açıldığında AYARLARI ve KATEGORİLERİ yükle
   useEffect(() => {
-    const loadStars = async () => {
-      const sessions = await getAllSessions();
-      const focusSessions = sessions.filter((s) => s.type === "focus");
-      setStarCount(focusSessions.length);
+    const loadData = async () => {
+      // Ayarlar
+      const settings = await loadSettings();
+      const focusMin = settings.focus;
+      const breakMin = settings.breakTime;
+
+      setFocusDuration(focusMin * 60);
+      setBreakDuration(breakMin * 60);
+      setTimeLeft(focusMin * 60);
+
+      // Kategoriler
+      const cats = await loadCategories();
+      setCategories(cats);
+      setSelectedCategory(cats[0]);
     };
-    loadStars();
+
+    loadData();
   }, []);
 
-  // AppState ile dikkat dağınıklığı takibi
+  // ⭐ Dikkat Dağınıklığı Takibi (AppState)
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (nextState) => {
       if (appState.current === "active" && nextState.match(/inactive|background/)) {
-        // Odaklanma çalışıyorsa ve arkaya giderse: duraklat + dikkat dağınıklığı
         if (isRunning && mode === "focus") {
           setIsRunning(false);
           setDistractionCount((prev) => prev + 1);
@@ -51,12 +62,10 @@ export default function TimerScreen() {
       appState.current = nextState;
     });
 
-    return () => {
-      subscription.remove();
-    };
+    return () => subscription.remove();
   }, [isRunning, mode]);
 
-  // Zamanlayıcı
+  // ⭐ Zamanlayıcı Çalışma Mantığı
   useEffect(() => {
     if (isRunning) {
       intervalRef.current = setInterval(() => {
@@ -69,25 +78,21 @@ export default function TimerScreen() {
           return prev - 1;
         });
       }, 1000);
-    } else if (!isRunning && intervalRef.current) {
-      clearInterval(intervalRef.current);
+    } else {
+      if (intervalRef.current) clearInterval(intervalRef.current);
     }
 
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
+    return () => intervalRef.current && clearInterval(intervalRef.current);
   }, [isRunning, mode]);
 
+  // ⭐ SÜRE BİTTİĞİNDE ÇALIŞAN KOD
   const handleTimerFinished = async () => {
-    // Seans objesi oluştur
     const durationMin =
-      mode === "focus"
-        ? FOCUS_DURATION_SEC / 60
-        : BREAK_DURATION_SEC / 60;
+      mode === "focus" ? focusDuration / 60 : breakDuration / 60;
 
     const session = {
       id: Date.now().toString(),
-      type: mode, // "focus" veya "break"
+      type: mode,
       date: new Date().toISOString(),
       durationMinutes: durationMin,
       category: mode === "focus" ? selectedCategory : "Ara",
@@ -97,54 +102,47 @@ export default function TimerScreen() {
     await addSession(session);
 
     if (mode === "focus") {
-      // Gökyüzüne yıldız ekle
-      setStarCount((prev) => prev + 1);
-
       Alert.alert(
         "Çalışma Bitti",
-        "Tebrikler! Çalışma süren bitti, şimdi otomatik olarak mola başlıyor 🎉",
+        "Tebrikler! Çalışma süren doldu. Şimdi otomatik mola başlıyor 🎉",
         [{ text: "Tamam" }]
       );
 
-      // Dikkat dağınıklığı sıfırla
       setDistractionCount(0);
 
-      // Otomatik mola başlat
       setMode("break");
-      setTimeLeft(BREAK_DURATION_SEC);
+      setTimeLeft(breakDuration);
       setIsRunning(true);
     } else {
-      // Mola bitti
       Alert.alert(
         "Mola Bitti",
-        "Molan sona erdi, tekrar odaklanmaya hazır mısın?",
+        "Molayı tamamladın! Tekrar çalışmaya geçebilirsin.",
         [{ text: "Tamam" }]
       );
 
       setMode("focus");
-      setTimeLeft(FOCUS_DURATION_SEC);
+      setTimeLeft(focusDuration);
       setIsRunning(false);
       setDistractionCount(0);
     }
   };
 
+  // ⭐ Butonlar
   const handleStart = () => {
     if (mode === "focus" && !selectedCategory) {
-      Alert.alert("Kategori Seç", "Önce bir kategori seçmelisin.");
+      Alert.alert("Kategori Seç", "Lütfen bir kategori seç.");
       return;
     }
     setIsRunning(true);
   };
 
-  const handlePause = () => {
-    setIsRunning(false);
-  };
+  const handlePause = () => setIsRunning(false);
 
   const handleReset = () => {
     setIsRunning(false);
     setDistractionCount(0);
     setMode("focus");
-    setTimeLeft(FOCUS_DURATION_SEC);
+    setTimeLeft(focusDuration);
   };
 
   const formatTime = (sec) => {
@@ -157,8 +155,6 @@ export default function TimerScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <StarSky starCount={starCount} />
-
       <View style={styles.content}>
         <Text style={styles.modeText}>
           {mode === "focus" ? "Çalışma Modu" : "Mola Modu"}
@@ -166,12 +162,12 @@ export default function TimerScreen() {
 
         <Text style={styles.timerText}>{formatTime(timeLeft)}</Text>
 
-        {/* Kategori Seçimi (sadece focus modunda göster) */}
+        {/* ⭐ Kategori Seçimi */}
         {mode === "focus" && (
           <View style={styles.categoryContainer}>
             <Text style={styles.sectionTitle}>Kategori Seç</Text>
             <View style={styles.categoryRow}>
-              {CATEGORIES.map((cat) => (
+              {categories.map((cat) => (
                 <TouchableOpacity
                   key={cat}
                   style={[
@@ -194,12 +190,12 @@ export default function TimerScreen() {
           </View>
         )}
 
-        {/* Dikkat Dağınıklığı */}
+        {/* ⭐ Dikkat Dağınıklığı */}
         <Text style={styles.distractionText}>
           Dikkat Dağınıklığı: {distractionCount}
         </Text>
 
-        {/* Butonlar */}
+        {/* ⭐ Butonlar */}
         <View style={styles.buttonRow}>
           <TouchableOpacity
             style={[styles.button, styles.startButton]}
@@ -223,15 +219,14 @@ export default function TimerScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Seans Özeti küçük bilgi */}
+        {/* ⭐ Seans Özeti */}
         <View style={styles.summaryBox}>
           <Text style={styles.summaryTitle}>Seans Özeti</Text>
           <Text style={styles.summaryText}>
             Mod: {mode === "focus" ? "Çalışma" : "Mola"}
           </Text>
           <Text style={styles.summaryText}>
-            Kategori:{" "}
-            {mode === "focus" ? selectedCategory : "Ara"}
+            Kategori: {mode === "focus" ? selectedCategory : "Ara"}
           </Text>
           <Text style={styles.summaryText}>
             Dikkat Dağınıklığı: {distractionCount}
@@ -242,6 +237,7 @@ export default function TimerScreen() {
   );
 }
 
+// 🖌 Tasarımlar
 const styles = StyleSheet.create({
   container: {
     flex: 1,
