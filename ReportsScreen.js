@@ -1,242 +1,478 @@
 // src/screens/ReportsScreen.js
-import React, { useEffect, useState } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  Dimensions,
-} from "react-native";
-import { getAllSessions } from "../storage/sessionStorage";
-import {
-  BarChart,
-  PieChart,
-} from "react-native-chart-kit";
 
-const screenWidth = Dimensions.get("window").width;
+import { useContext, useEffect, useState } from "react";
+import {
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
+
+import { loadCompletedTodos } from "../storage/completedStorage"; // ⭐ yeni eklenen
+import { getAllSessions } from "../storage/sessionStorage";
+import { ThemeContext } from "../theme/ThemeContext";
+
+import { BarChart, PieChart } from "react-native-gifted-charts";
+
+// Rastgele kategori rengi
+const categoryColors = {};
+const getColor = (name) => {
+  if (!categoryColors[name]) {
+    categoryColors[name] =
+      `hsl(${Math.floor(Math.random() * 360)}, 70%, 55%)`;
+  }
+  return categoryColors[name];
+};
 
 export default function ReportsScreen() {
+  const { theme } = useContext(ThemeContext);
+
   const [sessions, setSessions] = useState([]);
-  const [todayTotal, setTodayTotal] = useState(0);
-  const [allTimeTotal, setAllTimeTotal] = useState(0);
+  const [completedTodos, setCompletedTodos] = useState([]); // ⭐ yeni
+
+  const [todayMinutes, setTodayMinutes] = useState(0);
+  const [weekMinutes, setWeekMinutes] = useState(0);
+  const [totalMinutes, setTotalMinutes] = useState(0);
   const [totalDistractions, setTotalDistractions] = useState(0);
-  const [barData, setBarData] = useState(null);
+
+  const [dailySummary, setDailySummary] = useState(null);
+
+  const [barData, setBarData] = useState([]);
+  const [lineData, setLineData] = useState([]);
   const [pieData, setPieData] = useState([]);
+  const [categoryList, setCategoryList] = useState([]);
+  const [mode, setMode] = useState("weekly");
 
   useEffect(() => {
-    const load = async () => {
-      const all = await getAllSessions();
-      setSessions(all);
-      calculateStats(all);
-    };
-
-    const interval = setInterval(load, 2000); // basit: 2 sn'de bir güncelle
     load();
-
-    return () => clearInterval(interval);
   }, []);
 
-  const calculateStats = (all) => {
-    const today = new Date();
-    let todaySum = 0;
-    let allSum = 0;
-    let distractions = 0;
+  const load = async () => {
+    const all = await getAllSessions();
+    const focus = all.filter((s) => s.type === "focus");
+    setSessions(focus);
 
-    all.forEach((s) => {
-      if (s.type === "focus") {
-        const date = new Date(s.date);
-        if (date.toDateString() === today.toDateString()) {
-          todaySum += s.durationMinutes;
-        }
-        allSum += s.durationMinutes;
-        distractions += s.distractions || 0;
-      }
-    });
+    const todos = await loadCompletedTodos(); // ⭐ görevler çekiliyor
+    setCompletedTodos(todos);
 
-    setTodayTotal(todaySum);
-    setAllTimeTotal(allSum);
-    setTotalDistractions(distractions);
-
-    prepareBarData(all);
-    preparePieData(all);
+    computeBasicStats(focus);
+    computeRange("weekly", focus);
+    computeDailySummary(focus);
   };
 
-  const prepareBarData = (all) => {
-    const today = new Date();
-    const days = [];
+  // ---------------------- GÜNLÜK ÖZET ------------------------
+  const computeDailySummary = (data) => {
+    const today = new Date().toDateString();
 
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date();
-      d.setDate(today.getDate() - i);
-      days.push(d);
+    const todayData = data.filter(
+      (s) => new Date(s.date).toDateString() === today
+    );
+
+    if (todayData.length === 0) {
+      setDailySummary(null);
+      return;
     }
 
-    const labels = [];
-    const data = [];
+    const total = todayData.reduce((acc, x) => acc + x.durationMinutes, 0);
+    const distractions = todayData.reduce((acc, x) => acc + x.distractions, 0);
+    const sessionsCount = todayData.length;
 
-    days.forEach((d) => {
-      const label = `${d.getDate()}/${d.getMonth() + 1}`;
-      labels.push(label);
-      let sum = 0;
-      all.forEach((s) => {
-        if (s.type === "focus") {
-          const sd = new Date(s.date);
-          if (sd.toDateString() === d.toDateString()) {
-            sum += s.durationMinutes;
-          }
-        }
-      });
-      data.push(sum);
+    const cats = {};
+    let breakCount = 0;
+
+    todayData.forEach((s) => {
+      if (!cats[s.category]) cats[s.category] = 0;
+      cats[s.category] += s.durationMinutes;
+
+      if (s.type === "break") breakCount++;
     });
 
-    setBarData({
-      labels,
-      datasets: [{ data }],
+    const mostUsed = Object.entries(cats).sort((a, b) => b[1] - a[1])[0];
+
+    setDailySummary({
+      total,
+      distractions,
+      sessionsCount,
+      mostCategory: mostUsed ? mostUsed[0] : "-",
+      breaks: breakCount,
     });
   };
 
-  const preparePieData = (all) => {
-    const categoryMap = {};
+  // ---------------------- TEMEL İSTATİSTİK ------------------------
+  const computeBasicStats = (data) => {
+    const now = new Date();
 
-    all.forEach((s) => {
-      if (s.type === "focus") {
-        const cat = s.category || "Diğer";
-        if (!categoryMap[cat]) categoryMap[cat] = 0;
-        categoryMap[cat] += s.durationMinutes;
-      }
+    const today = new Date().toDateString();
+    const t = data
+      .filter((s) => new Date(s.date).toDateString() === today)
+      .reduce((a, b) => a + b.durationMinutes, 0);
+    setTodayMinutes(t);
+
+    const w = data
+      .filter((s) => (now - new Date(s.date)) / 86400000 <= 7)
+      .reduce((a, b) => a + b.durationMinutes, 0);
+    setWeekMinutes(w);
+
+    const total = data.reduce((a, b) => a + b.durationMinutes, 0);
+    setTotalMinutes(total);
+
+    const dis = data.reduce((a, b) => a + b.distractions, 0);
+    setTotalDistractions(dis);
+  };
+
+  // ---------------------- FİLTRE ------------------------
+  const computeRange = (type, all) => {
+    setMode(type);
+    const now = new Date();
+
+    const diffDays = (d) => (now - new Date(d)) / 86400000;
+    let filtered = [];
+
+    if (type === "daily") filtered = all.filter((s) => diffDays(s.date) <= 1);
+    if (type === "weekly") filtered = all.filter((s) => diffDays(s.date) <= 7);
+    if (type === "monthly") filtered = all.filter((s) => diffDays(s.date) <= 30);
+    if (type === "yearly") filtered = all.filter((s) => diffDays(s.date) <= 365);
+    if (type === "all") filtered = all;
+
+    computeBar(filtered, now);
+    computeLine(filtered, now);
+    computePie(filtered);
+    computeCategoryList(filtered);
+  };
+
+  // ---------------------- BAR ------------------------
+  const computeBar = (filtered, now) => {
+    const days = {};
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(now);
+      d.setDate(now.getDate() - i);
+      const key = d.toISOString().slice(5, 10);
+      days[key] = 0;
+    }
+
+    filtered.forEach((s) => {
+      const k = s.date.slice(5, 10);
+      if (days[k] !== undefined) days[k] += s.durationMinutes;
     });
 
-    const colors = ["#22c55e", "#3b82f6", "#f97316", "#a855f7", "#eab308"];
+    setBarData(
+      Object.keys(days).map((k) => ({
+        value: days[k],
+        label: k,
+        frontColor: theme.accent,
+      }))
+    );
+  };
 
-    const pie = Object.keys(categoryMap).map((cat, idx) => ({
-      name: cat,
-      population: categoryMap[cat],
-      color: colors[idx % colors.length],
-      legendFontColor: "#e5e7eb",
-      legendFontSize: 12,
-    }));
+  // ---------------------- LINE ------------------------
+  const computeLine = (filtered, now) => {
+    const days = {};
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(now);
+      d.setDate(now.getDate() - i);
+      const key = d.toISOString().slice(5, 10);
+      days[key] = 0;
+    }
 
-    setPieData(pie);
+    filtered.forEach((s) => {
+      const k = s.date.slice(5, 10);
+      if (days[k] !== undefined) days[k] += s.durationMinutes;
+    });
+
+    setLineData(
+      Object.keys(days).map((k) => ({
+        value: days[k],
+        dataPointText: `${days[k]} dk`,
+      }))
+    );
+  };
+
+  // ---------------------- PIE ------------------------
+  const computePie = (filtered) => {
+    const cats = {};
+
+    filtered.forEach((s) => {
+      if (!cats[s.category]) cats[s.category] = 0;
+      cats[s.category] += s.durationMinutes;
+    });
+
+    setPieData(
+      Object.keys(cats).map((c) => ({
+        value: cats[c],
+        text: c,
+        color: getColor(c),
+      }))
+    );
+  };
+
+  // ---------------------- CATEGORY LIST ------------------------
+  const computeCategoryList = (filtered) => {
+    const cats = {};
+
+    filtered.forEach((s) => {
+      if (!cats[s.category]) cats[s.category] = 0;
+      cats[s.category] += s.durationMinutes;
+    });
+
+    setCategoryList(
+      Object.keys(cats).map((c) => ({
+        name: c,
+        minutes: cats[c],
+        color: getColor(c),
+      }))
+    );
   };
 
   return (
-    <ScrollView style={styles.container}>
-      <Text style={styles.title}>Raporlar</Text>
+    <ScrollView style={{ padding: 16, backgroundColor: theme.background }}>
 
-      {/* Genel İstatistikler */}
-      <View style={styles.cardRow}>
-        <View style={styles.card}>
-          <Text style={styles.cardLabel}>Bugün Toplam</Text>
-          <Text style={styles.cardValue}>{todayTotal.toFixed(1)} dk</Text>
+      {/* ---------------------- FİLTRE BUTONLARI ---------------------- */}
+      <View style={styles.filterRow}>
+        {[
+          { key: "daily", label: "Bugün" },
+          { key: "weekly", label: "Hafta" },
+          { key: "monthly", label: "Ay" },
+          { key: "yearly", label: "Yıl" },
+          { key: "all", label: "Tümü" },
+        ].map((f) => (
+          <TouchableOpacity
+            key={f.key}
+            onPress={() => computeRange(f.key, sessions)}
+            style={[
+              styles.filterBtn,
+              {
+                backgroundColor:
+                  mode === f.key ? theme.accent : theme.card,
+              },
+            ]}
+          >
+            <Text
+              style={{
+                color: mode === f.key ? "#fff" : theme.textPrimary,
+                fontWeight: "700",
+              }}
+            >
+              {f.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {/* ---------------------- GÜNLÜK ÖZET ---------------------- */}
+      {dailySummary && (
+        <View style={[styles.dailyCard, { backgroundColor: theme.card }]}>
+          <Text style={styles.dailyTitle}>📅 Günlük Özet</Text>
+
+          <Text style={styles.dailyText}>
+            • Toplam Süre: {dailySummary.total} dk
+          </Text>
+          <Text style={styles.dailyText}>
+            • Seans Sayısı: {dailySummary.sessionsCount}
+          </Text>
+          <Text style={styles.dailyText}>
+            • Dikkat Dağınıklığı: {dailySummary.distractions}
+          </Text>
+          <Text style={styles.dailyText}>
+            • En Çok Kullanılan Kategori: {dailySummary.mostCategory}
+          </Text>
+          <Text style={styles.dailyText}>
+            • Toplam Mola Sayısı: {dailySummary.breaks}
+          </Text>
         </View>
-        <View style={styles.card}>
-          <Text style={styles.cardLabel}>Tüm Zamanlar</Text>
-          <Text style={styles.cardValue}>{allTimeTotal.toFixed(1)} dk</Text>
+      )}
+
+      {/* ---------------------- KPI CARDS ---------------------- */}
+      <View style={styles.kpiContainer}>
+        {[
+          { title: "Bugün", value: todayMinutes + " dk" },
+          { title: "Bu Hafta", value: weekMinutes + " dk" },
+          { title: "Toplam", value: totalMinutes + " dk" },
+          { title: "Dağınıklık", value: totalDistractions },
+        ].map((item, i) => (
+          <View key={i} style={[styles.kpiBox, { backgroundColor: theme.card }]}>
+            <Text style={styles.kpiTitle}>{item.title}</Text>
+            <Text style={[styles.kpiValue, { color: theme.accent }]}>
+              {item.value}
+            </Text>
+          </View>
+        ))}
+      </View>
+
+      {/* ---------------------- GRAFİKLER YAN YANA ---------------------- */}
+      <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+        
+        {/* BAR */}
+        <View style={[styles.smallCard, { backgroundColor: theme.card }]}>
+          <Text style={styles.sectionTitle}>Son 7 Gün</Text>
+
+          <BarChart
+            data={barData}
+            barWidth={22}
+            spacing={10}
+            roundedTop
+            hideRules
+            frontColor={theme.accent}
+            noOfSections={4}
+            height={180}
+          />
+        </View>
+
+        {/* PIE */}
+        <View style={[styles.smallCard, { backgroundColor: theme.card }]}>
+          <Text style={styles.sectionTitle}>Kategori</Text>
+
+          <PieChart
+            data={pieData}
+            donut
+            radius={70}
+            innerRadius={40}
+            textColor={theme.textPrimary}
+          />
         </View>
       </View>
 
-      <View style={styles.cardSingle}>
-        <Text style={styles.cardLabel}>Toplam Dikkat Dağınıklığı</Text>
-        <Text style={styles.cardValue}>{totalDistractions}</Text>
+      {/* ---------------------- TAMAMLANAN GÖREVLER ---------------------- */}
+      <View style={[styles.card, { backgroundColor: theme.card }]}>
+        <Text style={styles.sectionTitle}>✔ Bugün Tamamlanan Görevler</Text>
+
+        {completedTodos.length === 0 ? (
+          <Text style={{ color: theme.textSecondary }}>Görev yok.</Text>
+        ) : (
+          completedTodos.map((t) => (
+            <Text key={t.id} style={styles.todoText}>
+              • {t.text}
+            </Text>
+          ))
+        )}
       </View>
 
-      {/* Son 7 Gün Bar Chart */}
-      <Text style={styles.sectionTitle}>Son 7 Gün Odaklanma Süreleri</Text>
-      {barData && (
-        <BarChart
-          data={barData}
-          width={screenWidth - 32}
-          height={220}
-          yAxisSuffix=" dk"
-          chartConfig={{
-            backgroundGradientFrom: "#020617",
-            backgroundGradientTo: "#020617",
-            decimalPlaces: 1,
-            color: (opacity = 1) => `rgba(56, 189, 248, ${opacity})`,
-            labelColor: (opacity = 1) => `rgba(229, 231, 235, ${opacity})`,
-            propsForBackgroundLines: {
-              strokeDasharray: "",
-              stroke: "#1f2937",
-            },
-          }}
-          style={styles.chart}
-        />
-      )}
+      {/* ---------------------- KATEGORİ ÖZETİ ---------------------- */}
+      <View style={[styles.card, { backgroundColor: theme.card }]}>
+        <Text style={styles.sectionTitle}>Kategori Özeti</Text>
 
-      {/* Kategori Pie Chart */}
-      <Text style={styles.sectionTitle}>
-        Kategorilere Göre Odaklanma Dağılımı
-      </Text>
-      {pieData.length > 0 && (
-        <PieChart
-          data={pieData}
-          width={screenWidth - 32}
-          height={230}
-          chartConfig={{
-            backgroundGradientFrom: "#020617",
-            backgroundGradientTo: "#020617",
-            color: (opacity = 1) => `rgba(255, 255, 255, ${opacity})`,
-            labelColor: (opacity = 1) => `rgba(229, 231, 235, ${opacity})`,
-          }}
-          accessor="population"
-          backgroundColor="transparent"
-          paddingLeft="10"
-          style={styles.chart}
-        />
-      )}
+        {categoryList.map((c, i) => (
+          <View key={i} style={styles.catRow}>
+            <View style={[styles.dot, { backgroundColor: c.color }]} />
+            <Text style={styles.catName}>{c.name}</Text>
+
+            <View style={styles.progressBar}>
+              <View
+                style={{
+                  width: `${(c.minutes / totalMinutes) * 100}%`,
+                  backgroundColor: c.color,
+                  height: "100%",
+                  borderRadius: 10,
+                }}
+              />
+            </View>
+            <Text style={styles.catMin}>{c.minutes} dk</Text>
+          </View>
+        ))}
+      </View>
+
+      <View style={{ height: 60 }} />
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#020617",
-    paddingHorizontal: 16,
-    paddingTop: 16,
-  },
-  title: {
-    color: "#f9fafb",
-    fontSize: 24,
-    fontWeight: "bold",
-    marginBottom: 16,
-  },
-  cardRow: {
+  filterRow: {
     flexDirection: "row",
     justifyContent: "space-between",
+    marginBottom: 14,
+  },
+  filterBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+  },
+
+  dailyCard: {
+    padding: 16,
+    borderRadius: 16,
+    marginBottom: 18,
+  },
+  dailyTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    marginBottom: 10,
+  },
+  dailyText: {
+    fontSize: 14,
+    marginBottom: 4,
+  },
+
+  kpiContainer: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-between",
+    marginBottom: 18,
+  },
+  kpiBox: {
+    width: "48%",
+    padding: 14,
+    borderRadius: 16,
     marginBottom: 12,
   },
-  card: {
-    flex: 1,
-    marginHorizontal: 4,
-    backgroundColor: "#0f172a",
-    padding: 12,
-    borderRadius: 12,
+  kpiTitle: {
+    fontSize: 13,
+    color: "#888",
   },
-  cardSingle: {
-    backgroundColor: "#0f172a",
-    padding: 12,
-    borderRadius: 12,
-    marginBottom: 16,
-  },
-  cardLabel: {
-    color: "#9ca3af",
-    fontSize: 14,
-  },
-  cardValue: {
-    color: "#f9fafb",
-    fontSize: 20,
+  kpiValue: {
+    fontSize: 22,
     fontWeight: "bold",
     marginTop: 4,
   },
-  sectionTitle: {
-    color: "#e5e7eb",
-    fontSize: 16,
-    marginTop: 20,
-    marginBottom: 8,
+
+  smallCard: {
+    width: "48%",
+    padding: 14,
+    borderRadius: 16,
+    marginBottom: 20,
   },
-  chart: {
-    borderRadius: 12,
-    marginBottom: 24,
+
+  card: {
+    padding: 16,
+    borderRadius: 18,
+    marginBottom: 20,
+  },
+
+  sectionTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    marginBottom: 12,
+  },
+
+  todoText: {
+    fontSize: 15,
+    marginVertical: 4,
+  },
+
+  catRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 12,
+  },
+  dot: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    marginRight: 10,
+  },
+  catName: {
+    width: 90,
+  },
+  progressBar: {
+    flex: 1,
+    height: 8,
+    backgroundColor: "#ddd",
+    borderRadius: 10,
+    overflow: "hidden",
+    marginHorizontal: 8,
+  },
+  catMin: {
+    width: 50,
+    textAlign: "right",
   },
 });

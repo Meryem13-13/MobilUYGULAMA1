@@ -1,71 +1,177 @@
 // src/screens/TimerScreen.js
-import React, { useState, useEffect, useRef } from "react";
+
 import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  AppState,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+
+import {
   Alert,
+  AppState,
+  RefreshControl,
   SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 
+import { loadCategories } from "../storage/categoryStorage";
 import { addSession, getAllSessions } from "../storage/sessionStorage";
 import { loadSettings } from "../storage/settingsStorage";
-import { loadCategories } from "../storage/categoryStorage";
+import { ThemeContext } from "../theme/ThemeContext";
+
+import AnimatedSky from "../components/AnimatedSky";
+import AvatarView from "../components/AvatarView";
+import MoodSelector from "../components/MoodSelector";
+import { MOOD_CONFIG } from "../mood/moodConfig";
+
+import DropDownPicker from "react-native-dropdown-picker";
+
 
 export default function TimerScreen() {
-  const [mode, setMode] = useState("focus"); // "focus" | "break"
+  const { theme } = useContext(ThemeContext);
+
+  // TIMER STATES
+  const [mode, setMode] = useState("focus");
   const [timeLeft, setTimeLeft] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
 
-  const [focusDuration, setFocusDuration] = useState(1500); // saniye
-  const [breakDuration, setBreakDuration] = useState(300); // saniye
+  const [focusDuration, setFocusDuration] = useState(1500);
+  const [breakDuration, setBreakDuration] = useState(300);
 
-  const [categories, setCategories] = useState([]);
-  const [selectedCategory, setSelectedCategory] = useState("");
+  // CATEGORY DROPDOWN
+  const [categoryItems, setCategoryItems] = useState([]);
+  const [selectedCategory, setSelectedCategory] = useState(null);
+  const [openCategory, setOpenCategory] = useState(false);
+
+  // OTHERS
   const [distractionCount, setDistractionCount] = useState(0);
+  const [starCount, setStarCount] = useState(0);
+  const [mood, setMood] = useState("focused");
+
+  // MOTIVATION
+  const [dailyQuote, setDailyQuote] = useState(null);
+
+  // TODO LIST
+  const [todos, setTodos] = useState([]);
+  const [newTodo, setNewTodo] = useState("");
+
+  // PAGE REFRESH
+  const [refreshing, setRefreshing] = useState(false);
 
   const intervalRef = useRef(null);
   const appState = useRef(AppState.currentState);
 
-  // ⭐ Uygulama açıldığında AYARLARI ve KATEGORİLERİ yükle
-  useEffect(() => {
-    const loadData = async () => {
-      // Ayarlar
+
+  /* ---------------------------------------------------------------------- */
+  /*                               SAYFA YENİLEME                           */
+  /* ---------------------------------------------------------------------- */
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await reloadData();
+    setRefreshing(false);
+  };
+
+  const reloadData = async () => {
+    try {
       const settings = await loadSettings();
-      const focusMin = settings.focus;
-      const breakMin = settings.breakTime;
+      setFocusDuration(settings.focus * 60);
+      setBreakDuration(settings.breakTime * 60);
 
-      setFocusDuration(focusMin * 60);
-      setBreakDuration(breakMin * 60);
-      setTimeLeft(focusMin * 60);
+      setTimeLeft(settings.focus * 60);
 
-      // Kategoriler
+      fetchDailyQuote();
+
       const cats = await loadCategories();
-      setCategories(cats);
+      setCategoryItems(cats.map((c) => ({ label: c, value: c })));
+
+      if (!selectedCategory) {
+        setSelectedCategory(cats[0]);
+      }
+    } catch (e) {
+      console.log("Yenileme hatası:", e);
+    }
+  };
+
+
+  /* ---------------------------------------------------------------------- */
+  /*                                 INIT LOAD                              */
+  /* ---------------------------------------------------------------------- */
+
+  useEffect(() => {
+    const init = async () => {
+      const settings = await loadSettings();
+      const cats = await loadCategories();
+      const sessions = await getAllSessions();
+
+      // timer süreleri
+      setFocusDuration(settings.focus * 60);
+      setBreakDuration(settings.breakTime * 60);
+      setTimeLeft(settings.focus * 60);
+
+      // kategori dropdown
+      setCategoryItems(cats.map((c) => ({ label: c, value: c })));
       setSelectedCategory(cats[0]);
+
+      // yıldızlar
+      setStarCount(sessions.filter((s) => s.type === "focus").length);
+
+      // motivasyon sözü getir
+      fetchDailyQuote();
     };
 
-    loadData();
+    init();
   }, []);
 
-  // ⭐ Dikkat Dağınıklığı Takibi (AppState)
+
+  /* ---------------------------------------------------------------------- */
+  /*                             MOTIVATION API                              */
+  /* ---------------------------------------------------------------------- */
+
+  const fetchDailyQuote = async () => {
+    try {
+      const res = await fetch("https://api.adviceslip.com/advice");
+      const data = await res.json();
+
+      setDailyQuote({
+        text: data.slip.advice,
+        author: "Günlük Tavsiye",
+      });
+    } catch (err) {
+      console.log("API Hatası:", err);
+    }
+  };
+
+
+  /* ---------------------------------------------------------------------- */
+  /*                      ARKA PLANA GİDİNCE DAĞINIKLIK                      */
+  /* ---------------------------------------------------------------------- */
+
   useEffect(() => {
-    const subscription = AppState.addEventListener("change", (nextState) => {
-      if (appState.current === "active" && nextState.match(/inactive|background/)) {
+    const sub = AppState.addEventListener("change", (next) => {
+      if (appState.current === "active" && next !== "active") {
         if (isRunning && mode === "focus") {
           setIsRunning(false);
-          setDistractionCount((prev) => prev + 1);
+          setDistractionCount((p) => p + 1);
         }
       }
-      appState.current = nextState;
+      appState.current = next;
     });
 
-    return () => subscription.remove();
+    return () => sub.remove();
   }, [isRunning, mode]);
 
-  // ⭐ Zamanlayıcı Çalışma Mantığı
+
+  /* ---------------------------------------------------------------------- */
+  /*                                 TIMER                                   */
+  /* ---------------------------------------------------------------------- */
+
   useEffect(() => {
     if (isRunning) {
       intervalRef.current = setInterval(() => {
@@ -79,47 +185,37 @@ export default function TimerScreen() {
         });
       }, 1000);
     } else {
-      if (intervalRef.current) clearInterval(intervalRef.current);
+      clearInterval(intervalRef.current);
     }
 
-    return () => intervalRef.current && clearInterval(intervalRef.current);
+    return () => clearInterval(intervalRef.current);
   }, [isRunning, mode]);
 
-  // ⭐ SÜRE BİTTİĞİNDE ÇALIŞAN KOD
-  const handleTimerFinished = async () => {
-    const durationMin =
-      mode === "focus" ? focusDuration / 60 : breakDuration / 60;
 
-    const session = {
+  /* ---------------------------------------------------------------------- */
+  /*                             TIMER FINISHED                              */
+  /* ---------------------------------------------------------------------- */
+
+  const handleTimerFinished = async () => {
+    await addSession({
       id: Date.now().toString(),
       type: mode,
       date: new Date().toISOString(),
-      durationMinutes: durationMin,
-      category: mode === "focus" ? selectedCategory : "Ara",
-      distractions: mode === "focus" ? distractionCount : 0,
-    };
-
-    await addSession(session);
+      durationMinutes:
+        mode === "focus" ? focusDuration / 60 : breakDuration / 60,
+      category: selectedCategory,
+      distractions: distractionCount,
+    });
 
     if (mode === "focus") {
-      Alert.alert(
-        "Çalışma Bitti",
-        "Tebrikler! Çalışma süren doldu. Şimdi otomatik mola başlıyor 🎉",
-        [{ text: "Tamam" }]
-      );
-
-      setDistractionCount(0);
-
+      Alert.alert("Çalışma Bitti 🎉", "Şimdi mola zamanı!");
+      setStarCount((p) => p + 1);
       setMode("break");
       setTimeLeft(breakDuration);
       setIsRunning(true);
+      setDistractionCount(0);
     } else {
-      Alert.alert(
-        "Mola Bitti",
-        "Molayı tamamladın! Tekrar çalışmaya geçebilirsin.",
-        [{ text: "Tamam" }]
-      );
-
+      Alert.alert("Mola Bitti", "Tekrar çalışalım 💪");
       setMode("focus");
       setTimeLeft(focusDuration);
       setIsRunning(false);
@@ -127,11 +223,14 @@ export default function TimerScreen() {
     }
   };
 
-  // ⭐ Butonlar
+
+  /* ---------------------------------------------------------------------- */
+  /*                               BUTTONS                                   */
+  /* ---------------------------------------------------------------------- */
+
   const handleStart = () => {
-    if (mode === "focus" && !selectedCategory) {
-      Alert.alert("Kategori Seç", "Lütfen bir kategori seç.");
-      return;
+    if (!selectedCategory && mode === "focus") {
+      return Alert.alert("Kategori Seç", "Lütfen bir kategori seçiniz.");
     }
     setIsRunning(true);
   };
@@ -145,201 +244,373 @@ export default function TimerScreen() {
     setTimeLeft(focusDuration);
   };
 
-  const formatTime = (sec) => {
-    const m = Math.floor(sec / 60)
-      .toString()
-      .padStart(2, "0");
-    const s = (sec % 60).toString().padStart(2, "0");
-    return `${m}:${s}`;
-  };
+
+  /* ---------------------------------------------------------------------- */
+  /*                              TIME FORMAT                                */
+  /* ---------------------------------------------------------------------- */
+
+  const formatTime = (sec) =>
+    `${String(Math.floor(sec / 60)).padStart(2, "0")}:${String(sec % 60).padStart(
+      2,
+      "0"
+    )}`;
+
+  const currentMoodConfig = MOOD_CONFIG[mood];
+
+
+  /* ---------------------------------------------------------------------- */
+  /*                                 RENDER                                  */
+  /* ---------------------------------------------------------------------- */
 
   return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.content}>
-        <Text style={styles.modeText}>
-          {mode === "focus" ? "Çalışma Modu" : "Mola Modu"}
-        </Text>
+    <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]}>
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+        }
+      >
 
-        <Text style={styles.timerText}>{formatTime(timeLeft)}</Text>
+        {/* SKY */}
+        <View style={{ height: 120 }}>
+          <AnimatedSky moodColor={currentMoodConfig.bgColor} />
+        </View>
 
-        {/* ⭐ Kategori Seçimi */}
-        {mode === "focus" && (
-          <View style={styles.categoryContainer}>
-            <Text style={styles.sectionTitle}>Kategori Seç</Text>
-            <View style={styles.categoryRow}>
-              {categories.map((cat) => (
-                <TouchableOpacity
-                  key={cat}
-                  style={[
-                    styles.categoryButton,
-                    selectedCategory === cat && styles.categoryButtonActive,
-                  ]}
-                  onPress={() => setSelectedCategory(cat)}
-                >
-                  <Text
-                    style={[
-                      styles.categoryText,
-                      selectedCategory === cat && styles.categoryTextActive,
-                    ]}
-                  >
-                    {cat}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+        <AvatarView starCount={starCount} theme={theme} />
+        <MoodSelector currentMood={mood} onChange={setMood} theme={theme} />
+
+        {/* MOTIVATION QUOTE */}
+        {dailyQuote && (
+          <View style={[styles.quoteBox, { backgroundColor: theme.card }]}>
+            <Text style={[styles.quoteText, { color: theme.textPrimary }]}>
+              "{dailyQuote.text}"
+            </Text>
+            <Text style={[styles.quoteAuthor, { color: theme.textSecondary }]}>
+              — {dailyQuote.author}
+            </Text>
+
+            <TouchableOpacity
+              style={[styles.newQuoteBtn, { backgroundColor: theme.accent }]}
+              onPress={fetchDailyQuote}
+            >
+              <Text style={{ color: "#fff" }}>Yeni Söz Getir</Text>
+            </TouchableOpacity>
           </View>
         )}
 
-        {/* ⭐ Dikkat Dağınıklığı */}
-        <Text style={styles.distractionText}>
+        {/* MOOD MESSAGE */}
+        <View style={[styles.moodBox, { backgroundColor: theme.card }]}>
+          <Text style={[styles.moodText, { color: theme.textPrimary }]}>
+            {currentMoodConfig.message}
+          </Text>
+        </View>
+
+        {/* TIMER */}
+        <Text style={[styles.modeText, { color: theme.textTitle }]}>
+          {mode === "focus" ? "Çalışma Modu" : "Mola Modu"}
+        </Text>
+
+        <Text style={[styles.timerText, { color: theme.textPrimary }]}>
+          {formatTime(timeLeft)}
+        </Text>
+
+        {/* CATEGORY DROPDOWN */}
+        {mode === "focus" && (
+          <View style={{ zIndex: 1000, marginBottom: openCategory ? 150 : 20 }}>
+            <Text style={[styles.sectionTitle, { color: theme.textTitle }]}>
+              Kategori Seç
+            </Text>
+
+            <DropDownPicker
+              open={openCategory}
+              value={selectedCategory}
+              items={categoryItems}
+              setOpen={setOpenCategory}
+              setValue={setSelectedCategory}
+              setItems={setCategoryItems}
+              placeholder="Kategori seçin..."
+              style={{
+                backgroundColor: theme.card,
+                borderColor: theme.accent,
+              }}
+              dropDownContainerStyle={{
+                backgroundColor: theme.card,
+                borderColor: theme.accent,
+              }}
+              textStyle={{ color: theme.textPrimary }}
+              placeholderStyle={{ color: theme.textSecondary }}
+              disabled={isRunning}
+            />
+          </View>
+        )}
+
+        {/* DISTRACTION COUNT */}
+        <Text style={[styles.distractionText, { color: theme.textPrimary }]}>
           Dikkat Dağınıklığı: {distractionCount}
         </Text>
 
-        {/* ⭐ Butonlar */}
+        {/* TODO LIST */}
+        <View style={[styles.todoBox, { backgroundColor: theme.card }]}>
+          <Text style={[styles.todoTitle, { color: theme.textTitle }]}>
+            Günlük Yapılacaklar
+          </Text>
+
+          <View style={styles.todoInputRow}>
+            <TextInput
+              style={[
+                styles.todoInput,
+                { color: theme.textPrimary, borderColor: theme.accent },
+              ]}
+              placeholder="Görev ekle..."
+              placeholderTextColor={theme.textSecondary}
+              value={newTodo}
+              onChangeText={setNewTodo}
+            />
+            <TouchableOpacity
+              style={[styles.todoAddBtn, { backgroundColor: theme.accent }]}
+              onPress={() => {
+                if (newTodo.trim()) {
+                  setTodos([...todos, { id: Date.now(), text: newTodo, done: false }]);
+                  setNewTodo("");
+                }
+              }}
+            >
+              <Text style={{ color: "#fff" }}>Ekle</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* TODO LIST DISPLAY */}
+          {todos.length === 0 ? (
+            <Text style={[styles.emptyTodoText, { color: theme.textSecondary }]}>
+              Henüz görev yok
+            </Text>
+          ) : (
+            todos.map((item) => (
+              <View key={item.id} style={styles.todoItem}>
+                <TouchableOpacity
+                  style={styles.todoCheck}
+                  onPress={() =>
+                    setTodos(
+                      todos.map((t) =>
+                        t.id === item.id ? { ...t, done: !t.done } : t
+                      )
+                    )
+                  }
+                >
+                  <Text style={{ color: theme.accent }}>
+                    {item.done ? "✓" : "○"}
+                  </Text>
+                </TouchableOpacity>
+
+                <Text
+                  style={[
+                    styles.todoText,
+                    {
+                      color: theme.textPrimary,
+                      textDecorationLine: item.done ? "line-through" : "none",
+                    },
+                  ]}
+                >
+                  {item.text}
+                </Text>
+
+                <TouchableOpacity
+                  onPress={() =>
+                    setTodos(todos.filter((t) => t.id !== item.id))
+                  }
+                >
+                  <Text style={[styles.todoDelete, { color: "#ff4d4d" }]}>
+                    Sil
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            ))
+          )}
+        </View>
+
+        {/* BUTTONS */}
         <View style={styles.buttonRow}>
           <TouchableOpacity
-            style={[styles.button, styles.startButton]}
+            style={[styles.button, { backgroundColor: theme.buttonStart }]}
             onPress={handleStart}
           >
             <Text style={styles.buttonText}>Başlat</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[styles.button, styles.pauseButton]}
+            style={[styles.button, { backgroundColor: theme.buttonPause }]}
             onPress={handlePause}
           >
             <Text style={styles.buttonText}>Duraklat</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[styles.button, styles.resetButton]}
+            style={[styles.button, { backgroundColor: theme.buttonReset }]}
             onPress={handleReset}
           >
             <Text style={styles.buttonText}>Sıfırla</Text>
           </TouchableOpacity>
         </View>
 
-        {/* ⭐ Seans Özeti */}
-        <View style={styles.summaryBox}>
-          <Text style={styles.summaryTitle}>Seans Özeti</Text>
-          <Text style={styles.summaryText}>
+        {/* SUMMARY */}
+        <View style={[styles.summaryBox, { backgroundColor: theme.card }]}>
+          <Text style={[styles.summaryTitle, { color: theme.textTitle }]}>
+            Seans Özeti
+          </Text>
+
+          <Text style={[styles.summaryText, { color: theme.textPrimary }]}>
             Mod: {mode === "focus" ? "Çalışma" : "Mola"}
           </Text>
-          <Text style={styles.summaryText}>
-            Kategori: {mode === "focus" ? selectedCategory : "Ara"}
+
+          <Text style={[styles.summaryText, { color: theme.textPrimary }]}>
+            Kategori: {selectedCategory}
           </Text>
-          <Text style={styles.summaryText}>
+
+          <Text style={[styles.summaryText, { color: theme.textPrimary }]}>
             Dikkat Dağınıklığı: {distractionCount}
           </Text>
         </View>
-      </View>
+
+      </ScrollView>
     </SafeAreaView>
   );
 }
 
-// 🖌 Tasarımlar
+
+
+/* ---------------------------------------------------------------------- */
+/*                                STYLES                                   */
+/* ---------------------------------------------------------------------- */
+
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#020617",
+  container: { flex: 1 },
+
+  scroll: {
+    padding: 16,
+    paddingBottom: 120,
   },
-  content: {
-    flex: 1,
-    padding: 20,
+
+  quoteBox: {
+    padding: 14,
+    borderRadius: 12,
+    marginBottom: 14,
+    alignItems: "center",
   },
+  quoteText: { fontSize: 16, fontStyle: "italic", textAlign: "center" },
+  quoteAuthor: { fontSize: 14, marginTop: 6 },
+  newQuoteBtn: {
+    marginTop: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+  },
+
+  moodBox: {
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 10,
+  },
+  moodText: { fontSize: 14 },
+
   modeText: {
-    marginTop: 16,
     fontSize: 20,
-    color: "#e5e7eb",
     textAlign: "center",
+    marginTop: 8,
   },
+
   timerText: {
-    fontSize: 64,
+    fontSize: 68,
     fontWeight: "bold",
-    color: "#f9fafb",
     textAlign: "center",
-    marginVertical: 20,
+    marginVertical: 12,
   },
-  categoryContainer: {
+
+  sectionTitle: {
+    fontSize: 16,
+    marginBottom: 6,
+  },
+
+  distractionText: {
+    textAlign: "center",
+    fontSize: 16,
     marginTop: 10,
   },
-  sectionTitle: {
-    color: "#e5e7eb",
-    fontSize: 16,
-    marginBottom: 8,
+
+  /* TODOS */
+  todoBox: {
+    padding: 14,
+    borderRadius: 12,
+    marginVertical: 20,
   },
-  categoryRow: {
+  todoTitle: { fontSize: 17, fontWeight: "bold", marginBottom: 10 },
+
+  todoInputRow: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
+    marginBottom: 10,
   },
-  categoryButton: {
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 20,
+  todoInput: {
+    flex: 1,
     borderWidth: 1,
-    borderColor: "#4b5563",
+    padding: 8,
+    borderRadius: 8,
     marginRight: 8,
-    marginBottom: 8,
   },
-  categoryButtonActive: {
-    backgroundColor: "#22c55e",
-    borderColor: "#22c55e",
+  todoAddBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 8,
   },
-  categoryText: {
-    color: "#e5e7eb",
-    fontSize: 14,
-  },
-  categoryTextActive: {
-    color: "#020617",
-    fontWeight: "bold",
-  },
-  distractionText: {
-    marginTop: 16,
-    color: "#f97316",
-    fontSize: 16,
+
+  emptyTodoText: {
     textAlign: "center",
+    marginTop: 6,
   },
+
+  todoItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 6,
+  },
+  todoCheck: {
+    width: 30,
+    alignItems: "center",
+  },
+  todoText: {
+    flex: 1,
+    fontSize: 15,
+  },
+  todoDelete: { marginLeft: 10, fontWeight: "bold" },
+
+  /* BUTTONS */
   buttonRow: {
     flexDirection: "row",
+    marginTop: 18,
     justifyContent: "space-between",
-    marginTop: 24,
   },
   button: {
     flex: 1,
+    paddingVertical: 10,
     marginHorizontal: 4,
-    paddingVertical: 12,
     borderRadius: 10,
     alignItems: "center",
   },
-  startButton: {
-    backgroundColor: "#22c55e",
-  },
-  pauseButton: {
-    backgroundColor: "#facc15",
-  },
-  resetButton: {
-    backgroundColor: "#ef4444",
-  },
   buttonText: {
-    color: "#020617",
+    color: "#fff",
     fontWeight: "bold",
     fontSize: 16,
   },
+
   summaryBox: {
-    marginTop: 24,
-    padding: 12,
+    marginTop: 20,
+    padding: 14,
     borderRadius: 12,
-    backgroundColor: "#0f172a",
   },
   summaryTitle: {
-    color: "#e5e7eb",
     fontSize: 16,
-    marginBottom: 6,
     fontWeight: "bold",
+    marginBottom: 6,
   },
   summaryText: {
-    color: "#9ca3af",
     fontSize: 14,
   },
 });
